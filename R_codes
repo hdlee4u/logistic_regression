@@ -1,0 +1,350 @@
+##========================================================
+## Categorical Data Analysis
+## - Breast Cancer Wisconsin (Diagnostic) Data Set
+##   : Predict whether the cancer is benign or malignant
+##   : UCI Machine Learning Repository(https://archive.ics.uci.edu/ml/datasets)
+## - Author : Hongdon Lee
+## - Date : Dec 15th, 2018 
+##========================================================
+
+#----- 
+# Interpretation and Parsimony of model are the first priority
+#-----
+
+#install.packages("ggplot2")
+#install.packages("PerformanceAnalytics")
+#install.packages("GGally")
+#install.packages("fmsb")
+#install.packages("data.table")
+#install.packages("curl")
+#install.packages("reshape2")
+#install.packages("ROCR") # ROC curve
+
+rm(list=ls()) # clear all
+options(scipen=30)
+
+# data loading: WDBC (Wisconsin Diagnostic Breast Cancer)
+library(data.table)
+library(curl)
+
+url <- c("https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data")
+wdbc <- data.frame(fread(url))
+str(wdbc)
+
+# column names
+colnames(wdbc) <- c("id", "diagnosis", "radius_mean", "texture_mean", 
+                    "perimeter_mean", "area_mean", "smoothness_mean", "compactness_mean",
+                    "concavity_mean", "concave.points_mean", "symmetry_mean", "fractal_dimension_mean", 
+                    "radius_se", "texture_se", "perimeter_se", "area_se", 
+                    "smoothness_se", "compactness_se", "concavity_se", "concave.points_se", 
+                    "symmetry_se", "fractal_dimension_se", "radius_worst", "texture_worst", 
+                    "perimeter_worst", "area_worst", "smoothness_worst", "compactness_worst", 
+                    "concavity_worst", "concave.points_worst", "symmetry_worst", "fractal_dimension_worst")
+
+str(wdbc)
+head(wdbc, 2)
+
+attach(wdbc)
+
+# check missing value
+colSums(is.na(wdbc)) # no missing value, good
+sum(is.na(wdbc))
+
+# check duplicated data
+sum(duplicated(wdbc)) # no duplicated data, good~!
+
+# check Y: diagnosis
+# The diagnosis of breast tissues (M = malignant, B = benign)
+table(diagnosis); cat("total :", margin.table(table(diagnosis)))
+prop.table(table(diagnosis)) # Benign 62.7% vs. Malignant 37.2%
+
+# split Y, X
+Y <- ifelse(wdbc$diagnosis == 'M', 1, 0)
+X <- wdbc[,c(3:32)]
+names(X)
+
+# distribution and correlation check among input variables
+library(PerformanceAnalytics)
+chart.Correlation(X[,c(1:10)], histogram=TRUE, col="grey10", pch=1) # MEAN
+chart.Correlation(X[,c(11:20)], histogram=TRUE, col="grey10", pch=1) # SE
+chart.Correlation(X[,c(21:30)], histogram=TRUE, col="grey10", pch=1) # WORST
+
+# heatmap plot of correlation coefficients
+library(GGally)
+ggcorr(X, name="corr", label=T)
+
+# multicolleniarity
+library(fmsb)
+VIF(lm(radius_mean ~ .,data=X))
+VIF(lm(texture_mean ~ .,data=X))
+
+
+# Multi-colleniarity check and remove the highly correlated variables step by step
+# stepwise VIF function with preallocated vectors
+vif_func <- function(in_frame,thresh=10, trace=F,...){
+  
+  require(fmsb)
+  
+  if(class(in_frame) != 'data.frame') in_frame<-data.frame(in_frame)
+  
+  #get initial vif value for all comparisons of variables
+  vif_init <- vector('list', length = ncol(in_frame))
+  names(vif_init) <- names(in_frame)
+  var_names <- names(in_frame)
+  
+  for(val in var_names){
+    regressors <- var_names[-which(var_names == val)]
+    form <- paste(regressors, collapse = '+')
+    form_in <- formula(paste(val,' ~ .'))
+    vif_init[[val]] <- VIF(lm(form_in,data=in_frame,...))
+  }
+  vif_max<-max(unlist(vif_init))
+  
+  if(vif_max < thresh){
+    if(trace==T){ #print output of each iteration
+      prmatrix(vif_init,collab=c('var','vif'),rowlab=rep('', times = nrow(vif_init) ),quote=F)
+      cat('\n')
+      cat(paste('All variables have VIF < ', thresh,', max VIF ',round(vif_max,2), sep=''),'\n\n')
+    }
+    return(names(in_frame))
+  }
+  else{
+    
+    in_dat<-in_frame
+    
+    #backwards selection of explanatory variables, stops when all VIF values are below 'thresh'
+    while(vif_max >= thresh){
+      
+      vif_vals <- vector('list', length = ncol(in_dat))
+      names(vif_vals) <- names(in_dat)
+      var_names <- names(in_dat)
+      
+      for(val in var_names){
+        regressors <- var_names[-which(var_names == val)]
+        form <- paste(regressors, collapse = '+')
+        form_in <- formula(paste(val,' ~ .'))
+        vif_add <- VIF(lm(form_in,data=in_dat,...))
+        vif_vals[[val]] <- vif_add
+      }
+      
+      max_row <- which.max(vif_vals)
+      #max_row <- which( as.vector(vif_vals) == max(as.vector(vif_vals)) )
+      
+      vif_max<-vif_vals[max_row]
+      
+      if(vif_max<thresh) break
+      
+      if(trace==T){ #print output of each iteration
+        vif_vals <- do.call('rbind', vif_vals)
+        vif_vals
+        prmatrix(vif_vals,collab='vif',rowlab=row.names(vif_vals),quote=F)
+        cat('\n')
+        cat('removed: ', names(vif_max),unlist(vif_max),'\n\n')
+        flush.console()
+      }
+      in_dat<-in_dat[,!names(in_dat) %in% names(vif_max)]
+    }
+    return(names(in_dat))
+  }
+}
+
+
+# run vif_function
+X_independent <- vif_func(X, thresh=10, trace=T)
+X_independent
+
+# explanatory/independant variables after VIF test
+X_2 <- X[, X_independent]
+str(X_2)
+
+# correlation heatmap plot again
+ggcorr(X_2, name="corr", label=T)
+
+
+#-----
+# Standardization
+X_3 <- scale(X_2)
+summary(X_3)
+str(X_3)
+
+#-----
+# Variable selection (1st round)
+# Multiple t-tests of explanatory variables between diagnosis
+X_names <- names(data.frame(X_3))
+X_names
+
+t.test_p.value_df <- data.frame() # blank data.frame for saving
+
+for (i in 1:length(X_names)) {
+  t.test_p.value <- t.test(wdbc[,X_names[i]] ~ wdbc$diagnosis, var.equal = TRUE)$p.value
+  
+  t.test_p.value_df[i,1] <- X_names[i]
+  t.test_p.value_df[i,2] <- t.test_p.value
+}
+
+colnames(t.test_p.value_df) <- c("x_var_name", "p.value")
+t.test_p.value_df
+
+# sorting by p.value in ascending order
+library(dplyr)
+arrange(t.test_p.value_df, p.value)
+
+# select x_variables only if p.value < 0.05
+t.test_filtered <- t.test_p.value_df$p.value < 0.05
+X_names_filtered <- X_names[t.test_filtered]
+
+X_4 <- data.frame(X_3[, X_names_filtered])
+str(X_4)
+
+
+# sorting by p.value in descending order
+# t.test_p.value_df.sorted <- arrange(t.test_p.value_df[t.test_filtered,], p.value)
+# t.test_p.value_df.sorted
+
+t.test_p.value_df.sorted_2 <- arrange(t.test_p.value_df[t.test_filtered,], desc(p.value))
+t.test_p.value_df.sorted_2
+x_names_sorted <- t.test_p.value_df.sorted_2$x_var_name
+x_names_sorted
+
+X_5 <- X_4[x_names_sorted] # rearrange column order for plotting below 
+head(X_5,2)
+
+
+#-----
+# combine Y and X
+wdbc_2 <- data.frame(Y, X_5)
+str(wdbc_2)
+
+
+#-----
+# Box plot of X per Y(M, B)
+library(reshape2)
+wdbc_2_melt <- melt(wdbc_2, id.var = "Y")
+
+library(ggplot2)
+ggplot(data = wdbc_2_melt[wdbc_2_melt$value < 3,], aes(x=variable, y=value)) + 
+  geom_boxplot(aes(fill=as.factor(Y))) +
+  theme_bw() +
+  coord_flip()
+
+# scatter plot of x=concave.points_mean, y=area_worst
+ggplot(data=wdbc_2, aes(x=concave.points_mean, y=area_worst, colour=as.factor(Y), alpha=0.5)) +
+  geom_point(shape=19, size=3) +
+  ggtitle("Scatter Plot of concave.points_mean & area_worst by Y")
+
+ggplot(data=wdbc_2, aes(x=area_worst, y=texture_mean, colour=as.factor(Y), alpha=0.5)) +
+  geom_point(shape=19, size=3) +
+  ggtitle("Scatter Plot of area_worst & texture_mean by Y")
+
+
+##=========================
+## fitting logistic regression
+## variable selection by backward elimination method
+## wald test, LR test
+#---------------------------
+
+# data set with 12 input variable and Y variable
+wdbc_12 <- data.frame(Y, wdbc[,x_names_sorted])
+str(wdbc_12)
+
+# split train(0.8) and test set(0.2)
+set.seed(123) # for reproducibility
+train <- sample(1:nrow(wdbc_12), size=0.8*nrow(wdbc_12), replace=F)
+test <- (-train)
+Y.test <- Y[test]
+
+
+# train with training set
+glm.fit <- glm(Y ~ ., 
+               data = wdbc_12, 
+               family = binomial(link = "logit"), 
+               subset = train)
+
+summary(glm.fit)
+
+# Backward Elimination Approach
+# remove 'concave.points_se' variable
+glm.fit.2 <- glm(Y ~ concave.points_mean + area_worst + 
+                   perimeter_se + smoothness_worst + symmetry_worst +
+                   texture_mean + smoothness_mean + symmetry_mean + 
+                   fractal_dimension_worst + compactness_se + concavity_se, 
+                 data = wdbc_12, 
+                 family = binomial(link = "logit"), 
+                 subset = train)
+
+summary(glm.fit.2)
+
+# remove 'symmetry_mean' variable
+glm.fit.3 <- glm(Y ~ concave.points_mean + area_worst + 
+                   perimeter_se + smoothness_worst + symmetry_worst +
+                   texture_mean + smoothness_mean + 
+                   fractal_dimension_worst + compactness_se + concavity_se, 
+                 data = wdbc_12, 
+                 family = binomial(link = "logit"), 
+                 subset = train)
+
+summary(glm.fit.3)
+
+# remove 'fractal_dimension_worst' variable
+glm.fit.4 <- glm(Y ~ concave.points_mean + area_worst + 
+                   perimeter_se + smoothness_worst + symmetry_worst +
+                   texture_mean + smoothness_mean + 
+                   compactness_se + concavity_se, 
+                 data = wdbc_12, 
+                 family = binomial(link = "logit"), 
+                 subset = train)
+
+summary(glm.fit.4)
+
+# remove 'perimeter_se' variable
+glm.fit.5 <- glm(Y ~ concave.points_mean + area_worst + smoothness_worst + 
+                   symmetry_worst + texture_mean + smoothness_mean + 
+                   compactness_se + concavity_se, 
+                 data = wdbc_12, 
+                 family = binomial(link = "logit"), 
+                 subset = train)
+
+summary(glm.fit.5)
+
+# remove 'smoothness_mean' variable
+glm.fit.6 <- glm(Y ~ concave.points_mean + area_worst + smoothness_worst + 
+                   symmetry_worst + texture_mean +  
+                   compactness_se + concavity_se, 
+                 data = wdbc_12, 
+                 family = binomial(link = "logit"), 
+                 subset = train)
+
+summary(glm.fit.6)
+confint(glm.fit.6)
+
+w# likelihood ratio test
+LR_statistic = 601.380 - 64.446
+LR_statistic
+pchisq(LR_statistic, df = (454-447), lower.tail = F)
+ 
+
+##=========================
+# calculate the probabilities on test set
+glm.probs <- predict(glm.fit.6, wdbc_12[test,], type="response")
+glm.probs[1:20]
+
+# compute the predictions with the threshold of 0.5
+glm.pred <- rep(0, nrow(wdbc_12[test,]))
+glm.pred[glm.probs > .5] = 1
+table(Y.test, glm.pred)
+
+mean(Y.test == glm.pred) # accuracy
+mean(Y.test != glm.pred) # test error rate
+
+# ROC curve
+library(ROCR)
+pr <- prediction(glm.probs, Y.test)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="ROC Curve")
+
+# AUC (The Area Under an ROC Curve)
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+
+detach(wdbc)
