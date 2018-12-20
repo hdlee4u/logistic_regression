@@ -3,8 +3,6 @@
 ## - Breast Cancer Wisconsin (Diagnostic) Data Set
 ##   : Predict whether the cancer is benign or malignant
 ##   : UCI Machine Learning Repository(https://archive.ics.uci.edu/ml/datasets)
-## - Author : Hongdon Lee
-## - Date : Dec 15th, 2018 
 ##========================================================
 
 #----- 
@@ -81,6 +79,7 @@ VIF(lm(texture_mean ~ .,data=X))
 
 # Multi-colleniarity check and remove the highly correlated variables step by step
 # stepwise VIF function with preallocated vectors
+# code source: https://beckmw.wordpress.com/2013/02/05/collinearity-and-stepwise-vif-selection/
 vif_func <- function(in_frame,thresh=10, trace=F,...){
   
   require(fmsb)
